@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from aiogram.exceptions import TelegramBadRequest, TelegramForbidden, TelegramRetryAfter
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
 from aiogram.filters import Command, CommandObject, CommandStart, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -147,7 +147,7 @@ async def stop_live(bot: Bot, chat_id: int):
         task.cancel()
     message_id = live_messages.pop(chat_id, None)
     if message_id:
-        with contextlib.suppress(TelegramBadRequest, TelegramForbidden):
+        with contextlib.suppress(TelegramBadRequest, TelegramForbiddenError):
             await bot.delete_message(chat_id, message_id)
 
 
@@ -180,7 +180,7 @@ async def live_loop(bot: Bot, chat_id: int, message_id: int, tg_id: int, last_te
                 except TelegramBadRequest as error:
                     if "not modified" not in str(error):
                         break                         # сообщение удалено — больше не обновляем
-                except TelegramForbidden:
+                except TelegramForbiddenError:
                     break                             # пользователь заблокировал бота
                 last_text = text
 
@@ -209,7 +209,7 @@ async def btn_current_pair(message: Message, state: FSMContext, bot: Bot):
 
     chat_id = message.chat.id
     await stop_live(bot, chat_id)                       # старое сообщение удаляем
-    with contextlib.suppress(TelegramBadRequest, TelegramForbidden):
+    with contextlib.suppress(TelegramBadRequest, TelegramForbiddenError):
         await message.delete()                          # и само нажатие кнопки, чтобы не копился мусор
 
     snapshot = load_day(user)
