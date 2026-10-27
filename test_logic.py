@@ -55,7 +55,7 @@ print("✅ день без пар / нет звонков")
 
 # ---------- Расписание на сегодня ----------
 text = logic.today_schedule_text(at("10:30"), lessons, bells, 2, lunches)
-for piece in ("Вторник, 27 октября", "знаменатель", "✅ 1️⃣", "⏳ 3️⃣", "окно", "Обед 11:50–12:20"):
+for piece in ("Вторник, 27 октября", "синее расписание", "✅ 1️⃣", "⏳ 3️⃣", "окно", "Обед 11:50–12:20"):
     assert piece in text, f"нет «{piece}» в:\n{text}"
 print("✅ расписание на сегодня")
 print(text)
@@ -75,14 +75,17 @@ assert logic.course_of_group("без года", oct26) is None
 assert logic.group_prefix("тс 9-26-3,4") == "ТС"
 print("✅ автоопределение курса")
 
-# ---------- Числитель / знаменатель ----------
+# ---------- Зелёное / синее расписание ----------
 start = date(2026, 9, 1)
 assert logic.week_type_for(date(2026, 8, 31), start) == 1
 assert logic.week_type_for(date(2026, 9, 6), start) == 1
 assert logic.week_type_for(date(2026, 9, 7), start) == 2
 assert logic.week_type_for(date(2026, 9, 14), start) == 1
-assert "Числитель и знаменатель" in logic.week_explain_text(oct26, start)
-print("✅ числитель/знаменатель")
+assert "Зелёное и синее расписание" in logic.week_explain_text(oct26, start)
+assert "числител" not in logic.WEEK_NAMES[1].lower() and "знаменател" not in logic.WEEK_NAMES[2].lower()
+assert logic.parse_week("Зелёная") == 1 and logic.parse_week("синее") == 2
+assert logic.parse_week("числитель") == 1 and logic.parse_week("знаменатель") == 2   # старые слова тоже понимаем
+print("✅ зелёное/синее расписание")
 
 # ---------- Настройки ----------
 user = {"fio": "Иванов Иван Иванович", "group_name": "ТС 9-26-3,4"}
@@ -183,5 +186,57 @@ assert L.autocorrect_group("ТС")[1] == "bad_format"
 # цифры никогда не меняются
 assert L.autocorrect_group("Тэс 9-26-1,2")[0].split(" ", 1)[1] == "9-26-1,2"
 print("✅ автоисправление букв группы")
+
+# ---------- настройки без «определён по...» ----------
+user = {"fio": "Иванов Иван", "group_name": "ТС 9-26-3,4"}
+txt = logic.settings_text(user, date(2026, 10, 27), date(2026, 9, 1), None)
+assert "определён по" not in txt and "1 курс" in txt
+assert logic.course_info("ТС 9-26-3", date(2026, 10, 27)) == (1, "")
+assert "не нашёл год" in logic.settings_text({"fio": "А Б", "group_name": "ТС"}, date(2026, 10, 27), date(2026, 9, 1), None)
+print("✅ настройки без «определён по»")
+
+# ---------- звонки от ИИ ----------
+bells, probs = logic.bells_from_ai({"bells": [
+    {"pair": 1, "start": "08:30", "end": "10:05"},                                  # только начало и конец
+    {"pair": 2, "start1": "10:15", "end1": "11:00", "start2": "11:05", "end2": "11:50"},
+    {"pair": 3, "start": "12:00", "end": "11:00"},                                  # перепутан порядок
+    {"pair": "x", "start": "1", "end": "2"},
+]})
+assert bells[0] == [1, "08:30", "09:17", "09:17", "10:05"], bells
+assert bells[1] == [2, "10:15", "11:00", "11:05", "11:50"] and len(bells) == 2 and len(probs) == 2
+lun, lp = logic.lunches_from_ai({"lunches": [{"start": "11:50", "end": "12:20"}, {"start": "11:50", "end": "12:20"},
+                                             {"start": "13:00", "end": "12:00"}]})
+assert lun == [("11:50", "12:20")] and len(lp) == 1
+assert "11:50–12:20" in logic.ai_bells_preview_text(1, bells, lun, probs)
+# звонки из фото-ответа расписания тоже понимают «начало–конец»
+_, b2, _ = logic.lessons_from_ai({"lessons": [], "bells": [{"pair": 1, "start": "08:30", "end": "10:00"}]}, None, 1, date(2026, 10, 27))
+assert b2 == [[1, "08:30", "09:15", "09:15", "10:00"]]
+print("✅ звонки от ИИ")
+
+# ---------- ответ ИИ с «рассуждениями» и разбор запроса ----------
+import sys, types
+sys.modules.setdefault("aiohttp", types.SimpleNamespace(ClientTimeout=lambda **k: None, ClientSession=None,
+                                                         ClientError=Exception))
+import config, ai_parser
+assert ai_parser.extract_json('<think>думаю {не json}</think>```json\n{"bells": []}\n```') == {"bells": []}
+config.AI_API_KEY, config.AI_BASE_URL = "nvapi-abc", ""
+assert ai_parser.provider_name() == "custom" and "nvidia.com" in ai_parser.resolve_base_url()
+config.AI_API_KEY = "sk-or-abc"
+assert "openrouter.ai" in ai_parser.resolve_base_url()
+config.AI_API_KEY = "unknown-key"
+try:
+    ai_parser.resolve_base_url()
+    raise SystemExit("нужна ошибка про AI_BASE_URL")
+except ai_parser.AIError as e:
+    assert "AI_BASE_URL" in str(e)
+config.AI_BASE_URL = "https://example.com/v1/"
+assert ai_parser.resolve_base_url() == "https://example.com/v1"
+assert not ai_parser.vision_provider()                       # AI_VISION_MODEL не задан -> фото не читаем
+config.AI_VISION_MODEL = "some-vl-model"
+assert ai_parser.vision_provider() == "custom"
+assert "НЕЛЬЗЯ" not in ai_parser._text_prompt("bells", "1 пара 8.30-10.05") and "8.30-10.05" in ai_parser._text_prompt("bells", "1 пара 8.30-10.05")
+assert "ТС 9-26-3" in ai_parser._text_prompt("schedule", "пн 1 мат", "ТС 9-26-3")
+assert "модель" in ai_parser.explain_custom_error(404, "", "m").lower() and "AI_MODEL" in ai_parser.explain_custom_error(404, "", "m")
+print("✅ ИИ: адрес по ключу, текст, звонки, <think>")
 
 print("\nВсе проверки пройдены!")

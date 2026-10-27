@@ -51,6 +51,8 @@ class AdminInput(StatesGroup):
     del_bell = State()
     lunches = State()
     del_lunch = State()
+    ai_schedule = State()
+    ai_bells = State()
 
 
 # ---------- Вспомогательное ----------
@@ -242,7 +244,7 @@ def settings_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✏️ Изменить ФИО и группу", callback_data="set:edit")],
         [InlineKeyboardButton(text="🔔 Звонки и обеды моего курса", callback_data="set:bells")],
-        [InlineKeyboardButton(text="❓ Что такое числитель и знаменатель", callback_data="set:week")],
+        [InlineKeyboardButton(text="❓ Зелёное и синее расписание", callback_data="set:week")],
     ])
 
 
@@ -339,7 +341,7 @@ async def reg_group(message: Message, state: FSMContext):
     await state.clear()
 
     course, note = logic.course_info(group, now_local().date())
-    course_line = f"🔢 {course} курс ({note})" if course else f"🔢 Курс не определён: {note}"
+    course_line = f"🔢 {course} курс" if course else f"🔢 Курс не определён: {note}"
     await message.answer(f"Готово! ✅\n👤 {logic.esc(data['fio'])}\n👥 Группа {logic.esc(group)}\n"
                          f"{course_line}\n\nПользуйся кнопками внизу 👇",
                          reply_markup=main_menu(message.from_user.id))
@@ -374,8 +376,8 @@ ADMIN_ROOT_TEXT = (
     "🛠 <b>Админ-панель</b>\n"
     f"{logic.SEP}\n"
     "Выбери курс — для каждого курса расписание, звонки и обеды заполняются отдельно.\n\n"
-    "📷 Можно просто прислать фото расписания прямо сюда. ИИ определит курс по названию "
-    "группы (например, ТС 9-26-3 → 1 курс).\n\n"
+    "🤖 Расписание и звонки разбирает ИИ: внутри курса выбери раздел и пришли текст "
+    "(Nemotron читает текст; фото — если подключена модель с распознаванием картинок).\n\n"
     "Полезные команды:\n"
     "/set_specialty ТС Название специальности\n"
     "/schedule ТС 9-26-3 — расписание группы\n"
@@ -407,12 +409,14 @@ def section_menu(kind: str, course: int):
                 "Загрузи расписание фото/скриншотом или впиши пары текстом. "
                 "Группы других курсов бот не примет.")
         rows = [[InlineKeyboardButton(text="📷 Загрузить по фото", callback_data=f"adm:schphoto:{course}")],
-                [InlineKeyboardButton(text="✍️ Добавить текстом", callback_data=f"adm:schtext:{course}")],
+                [InlineKeyboardButton(text="🤖 ИИ разберёт текст расписания", callback_data=f"adm:schai:{course}")],
+                [InlineKeyboardButton(text="✍️ Добавить вручную (по строкам)", callback_data=f"adm:schtext:{course}")],
                 [InlineKeyboardButton(text="📋 Посмотреть", callback_data=f"adm:schview:{course}")]]
     elif kind == "bel":
         text = (f"🔔 <b>Звонки — {course} курс</b>\n{logic.SEP}\n"
                 "Звонки этого курса. Другие курсы не затрагиваются.")
-        rows = [[InlineKeyboardButton(text="➕ Добавить / изменить", callback_data=f"adm:beladd:{course}")],
+        rows = [[InlineKeyboardButton(text="🤖 ИИ разберёт звонки (текст или фото)", callback_data=f"adm:belai:{course}")],
+                [InlineKeyboardButton(text="➕ Добавить / изменить вручную", callback_data=f"adm:beladd:{course}")],
                 [InlineKeyboardButton(text="📋 Показать", callback_data=f"adm:belshow:{course}"),
                  InlineKeyboardButton(text="🗑 Удалить пару", callback_data=f"adm:beldel:{course}")]]
     else:
@@ -430,12 +434,24 @@ PROMPTS = {
                  "📷 Пришли фото или скриншот расписания (можно файлом).\n"
                  "Если на нём не видно название группы — подпиши фото, например: ТС 9-26-3\n"
                  "Отмена: нажми любую кнопку меню."),
+    "schai": (AdminInput.ai_schedule,
+              "🤖 Пришли расписание <b>текстом</b> — скопируй его как есть, формат любой.\n"
+              "Обязательно укажи группу, например: ТС 9-26-3.\n"
+              "Если пара идёт только по одной неделе, пометь её: зелёная (🟢) или синяя (🔵).\n"
+              "Дальше ИИ всё разберёт, а ты проверишь и подтвердишь.\n"
+              "Отмена: нажми любую кнопку меню."),
+    "belai": (AdminInput.ai_bells,
+              "🤖 Пришли расписание звонков <b>текстом</b> — как есть, формат любой. "
+              "Например:\n<code>1 пара 8:30–10:05\n2 пара 10:15–11:50\nОбед 11:50–12:20</code>\n"
+              "Можно и фото, если подключена модель с распознаванием картинок.\n"
+              "ИИ разберёт время пар (и обед, если он указан), а ты проверишь и подтвердишь.\n"
+              "Отмена: нажми любую кнопку меню."),
     "schtext": (AdminInput.schedule_text,
                 "✍️ Пришли пары — по одной в строке:\n"
                 "<code>группа; день; пара; предмет; кабинет; преподаватель; неделя</code>\n\n"
                 "Например:\n<code>ТС 9-26-3; пн; 1; Математика; 214; Иванова И.И.; каждая\n"
-                "ТС 9-26-3; пн; 2; Физика; 305; -; числитель</code>\n"
-                "Кабинет, преподавателя и неделю можно пропустить."),
+                "ТС 9-26-3; пн; 2; Физика; 305; -; зелёная</code>\n"
+                "Неделя: каждая, зелёная или синяя. Кабинет, преподавателя и неделю можно пропустить."),
     "beladd": (AdminInput.bells,
                "🔔 Пришли звонки — по одной паре в строке:\n"
                "<code>номер_пары начало1 конец1 начало2 конец2</code>\n\n"
@@ -640,8 +656,14 @@ async def admin_schedule_image(message: Message, state: FSMContext, bot: Bot):
             return
         file_id, mime = doc.file_id, doc.mime_type
 
-    # Если админ зашёл через «Расписание → Загрузить по фото», курс уже выбран
-    in_photo_mode = await state.get_state() == AdminInput.photo.state
+    if not ai_parser.vision_provider():
+        await message.answer(ai_parser.NO_VISION_MESSAGE)
+        return
+
+    # Если админ зашёл через «Расписание → Загрузить по фото» или «Звонки → ИИ», курс уже выбран
+    current_state = await state.get_state()
+    bells_mode = current_state == AdminInput.ai_bells.state
+    in_photo_mode = current_state in (AdminInput.photo.state, AdminInput.ai_schedule.state, AdminInput.ai_bells.state)
     course = (await state.get_data()).get("course") if in_photo_mode else None
 
     status = await message.answer("⏳ Распознаю расписание, это может занять до минуты...")
@@ -649,14 +671,23 @@ async def admin_schedule_image(message: Message, state: FSMContext, bot: Bot):
     group_hint = logic.normalize_group(message.caption) if message.caption else None
 
     try:
-        raw = await ai_parser.recognize_schedule(image, mime, group_hint)
+        raw = await ai_parser.recognize_image("bells" if bells_mode else "schedule", image, mime, group_hint)
     except ai_parser.AIError as error:
         await status.edit_text(f"❌ {logic.esc(error)}")
         return
+    if bells_mode:
+        await finish_bells_preview(message, state, status, raw, course)
+        return
 
+    await finish_schedule_preview(message, state, status, raw, course, group_hint)
+
+
+async def finish_schedule_preview(message: Message, state: FSMContext, status: Message,
+                                  raw: dict, course, group_hint):
+    """Проверяет ответ ИИ и показывает админу, что распознано, с кнопками подтверждения."""
     lessons, bells, problems = logic.lessons_from_ai(raw, group_hint, course, now_local().date())
     if not lessons and not bells:
-        text = "🤷 ИИ не нашёл на картинке ни одной подходящей пары."
+        text = "🤷 ИИ не нашёл ни одной подходящей пары."
         if problems:
             text += "\n\nЧто не получилось разобрать:\n" + "\n".join(f"• {logic.esc(p)}" for p in problems)
         await status.edit_text(text)
@@ -668,6 +699,72 @@ async def admin_schedule_image(message: Message, state: FSMContext, bot: Bot):
     await status.delete()
     await send_long(message, logic.ai_preview_text(lessons, bells, problems),
                     reply_markup=confirm_keyboard())
+
+
+def bells_confirm_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Сохранить звонки", callback_data="aib:save")],
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="aib:cancel")],
+    ])
+
+
+async def finish_bells_preview(message: Message, state: FSMContext, status: Message, raw: dict, course):
+    bells, problems = logic.bells_from_ai(raw)
+    lunches, lunch_problems = logic.lunches_from_ai(raw)
+    problems = problems + lunch_problems
+    if not bells and not lunches:
+        text = "🤷 ИИ не нашёл в тексте звонков."
+        if problems:
+            text += "\n\nЧто не получилось разобрать:\n" + "\n".join(f"• {logic.esc(p)}" for p in problems)
+        await status.edit_text(text)
+        return
+    await state.set_state(None)
+    await state.update_data(aib_bells=bells, aib_lunches=lunches, aib_course=course)
+    await status.delete()
+    await send_long(message, logic.ai_bells_preview_text(course, bells, lunches, problems),
+                    reply_markup=bells_confirm_keyboard())
+
+
+@router.message(StateFilter(AdminInput.ai_schedule, AdminInput.ai_bells), F.text,
+                ~F.text.startswith("/"), IsAdmin)
+async def admin_ai_text(message: Message, state: FSMContext):
+    """Админ прислал текст расписания или звонков — отдаём его ИИ."""
+    current = await state.get_state()
+    course = (await state.get_data()).get("course")
+    kind = "bells" if current == AdminInput.ai_bells.state else "schedule"
+    status = await message.answer("⏳ ИИ разбирает текст, это может занять до минуты...")
+    try:
+        raw = await ai_parser.analyze_text(kind, message.text)
+    except ai_parser.AIError as error:
+        await status.edit_text(f"❌ {logic.esc(error)}")
+        return
+    if kind == "bells":
+        await finish_bells_preview(message, state, status, raw, course)
+    else:
+        await finish_schedule_preview(message, state, status, raw, course, None)
+
+
+@router.callback_query(F.data.startswith("aib:"), IsAdmin)
+async def ai_bells_confirm(callback: CallbackQuery, state: FSMContext):
+    action = callback.data.split(":", 1)[1]
+    data = await state.get_data()
+    bells, lunches, course = data.get("aib_bells"), data.get("aib_lunches") or [], data.get("aib_course")
+    await callback.message.edit_reply_markup(reply_markup=None)
+    if course is None or bells is None:
+        await callback.answer("Это распознавание уже неактуально. Пришли звонки заново.", show_alert=True)
+        return
+    await state.update_data(aib_bells=None, aib_lunches=None, aib_course=None)
+    if action == "cancel":
+        await callback.message.answer("Отменено. В базу ничего не записано.")
+        await callback.answer()
+        return
+    for bell in bells:
+        db.set_bell(course, *bell)
+    for start, end in lunches:
+        db.add_lunch(course, start, end)
+    await callback.message.answer(f"✅ Сохранено для {course} курса: звонков — {len(bells)}, обедов — {len(lunches)}.\n"
+                                  "Посмотреть: Админ-панель → курс → Звонки → Показать.")
+    await callback.answer()
 
 
 @router.callback_query(F.data.startswith("ai:"), IsAdmin)
@@ -785,12 +882,17 @@ async def main():
         print("Не задан BOT_TOKEN. На Railway добавь его во вкладке Variables.")
         return
     provider = ai_parser.provider_name()
-    if provider == "claude":
-        print(f"Распознавание фото: Claude ({config.CLAUDE_MODEL})")
+    if provider == "custom":
+        print(f"ИИ для текста: {config.AI_MODEL}")
+    elif provider == "claude":
+        print(f"ИИ для текста: Claude ({config.CLAUDE_MODEL})")
     elif provider == "deepseek":
-        print(f"Распознавание фото: DeepSeek ({config.DEEPSEEK_MODEL})")
+        print(f"ИИ для текста: DeepSeek ({config.DEEPSEEK_MODEL})")
     else:
-        print("Внимание: не задан ANTHROPIC_API_KEY — загрузка расписания по фото работать не будет.")
+        print("Внимание: не задан AI_API_KEY — ИИ-разбор расписания и звонков работать не будет "
+              "(вручную добавлять можно).")
+    if not ai_parser.vision_provider():
+        print("Фото расписания не принимаются: нет модели, которая видит картинки (AI_VISION_MODEL).")
     db.init_db()
     logic.set_known_prefixes(specialties.PREFIXES | {r["prefix"] for r in db.get_specialties()})
     bot = Bot(token=config.BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))

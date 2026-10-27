@@ -27,12 +27,16 @@ DAY_ALIASES = {
     "сб": 6, "суббота": 6,
 }
 
-# Тип недели: 0 — пара каждую неделю, 1 — только по числителю, 2 — только по знаменателю
+# Тип недели: 0 — пара каждую неделю, 1 — зелёное расписание (бывший числитель),
+# 2 — синее расписание (бывший знаменатель)
 WEEK_EVERY, WEEK_NUMERATOR, WEEK_DENOMINATOR = 0, 1, 2
-WEEK_NAMES = {0: "каждую неделю", 1: "числитель", 2: "знаменатель"}
+WEEK_NAMES = {0: "каждую неделю", 1: "🟢 зелёное расписание", 2: "🔵 синее расписание"}
 WEEK_ALIASES = {
     "каждая": 0, "все": 0, "0": 0,
-    "числитель": 1, "чис": 1, "1": 1,
+    "зелёное": 1, "зеленое": 1, "зелёная": 1, "зеленая": 1, "зелёный": 1, "зеленый": 1,
+    "зел": 1, "зелен": 1, "🟢": 1,
+    "числитель": 1, "чис": 1, "1": 1,                      # старые названия тоже понимаем
+    "синее": 2, "синяя": 2, "синий": 2, "син": 2, "🔵": 2,
     "знаменатель": 2, "знам": 2, "2": 2,
 }
 
@@ -163,7 +167,7 @@ def course_info(group: str, today: date):
         return None, f"учёба с {year} года ещё не началась"
     if course > 4:
         return None, f"поступление в {year} — проверь группу"
-    return course, f"определён по группе: {year} — год поступления"
+    return course, ""
 
 
 # ---------- Разбор ввода ----------
@@ -188,7 +192,7 @@ def parse_week(text: str) -> int:
         return WEEK_EVERY
     if t in WEEK_ALIASES:
         return WEEK_ALIASES[t]
-    raise ValueError(f"не понял тип недели «{text.strip()}» (пиши каждая, числитель или знаменатель)")
+    raise ValueError(f"не понял тип недели «{text.strip()}» (пиши: каждая, зелёная или синяя)")
 
 
 def _empty_to_none(text: str):
@@ -264,7 +268,7 @@ def parse_lunch_line(line: str) -> tuple:
 # ---------- Неделя, звонки, обеды ----------
 
 def week_type_for(day: date, semester_start: date) -> int:
-    """Числитель (1) или знаменатель (2) для указанной даты."""
+    """Зелёная (1) или синяя (2) неделя для указанной даты."""
     first_monday = semester_start - timedelta(days=semester_start.weekday())
     weeks_passed = (day - first_monday).days // 7
     return WEEK_NUMERATOR if weeks_passed % 2 == 0 else WEEK_DENOMINATOR
@@ -288,15 +292,15 @@ def week_explain_text(today: date, semester_start: date) -> str:
     other = WEEK_DENOMINATOR if current == WEEK_NUMERATOR else WEEK_NUMERATOR
     next_monday = today + timedelta(days=7 - today.weekday())
     return (
-        "❓ <b>Числитель и знаменатель</b>\n"
+        "❓ <b>Зелёное и синее расписание</b>\n"
         f"{SEP}\n"
         "Некоторые пары проходят не каждую неделю, а через одну. Поэтому недели делятся на два "
         "вида, которые чередуются:\n\n"
-        "🔼 <b>Числитель</b> — первая неделя\n"
-        "🔽 <b>Знаменатель</b> — вторая неделя\n"
-        "и дальше по кругу: числитель, знаменатель, числитель, знаменатель…\n\n"
-        "В расписании это выглядит так: в одной клетке две пары — <b>верхняя идёт по числителю</b>, "
-        "<b>нижняя по знаменателю</b>. Пары без пометки идут каждую неделю.\n\n"
+        "🟢 <b>Зелёное расписание</b> — первая неделя (раньше: числитель)\n"
+        "🔵 <b>Синее расписание</b> — вторая неделя (раньше: знаменатель)\n"
+        "и дальше по кругу: зелёная, синяя, зелёная, синяя…\n\n"
+        "В расписании это выглядит так: в одной клетке две пары — <b>верхняя идёт по зелёной неделе</b>, "
+        "<b>нижняя по синей</b>. Пары без пометки идут каждую неделю.\n\n"
         "Неделя меняется каждый понедельник.\n"
         f"{SEP}\n"
         f"📍 Сейчас: <b>{WEEK_NAMES[current]}</b>\n"
@@ -322,7 +326,7 @@ def settings_text(user, today: date, semester_start: date, specialty_name=None) 
         f"🎓 <b>Специальность:</b> {spec}\n"
         f"👥 <b>Группа:</b> {esc(group)}\n"
         f"🔢 <b>Курс:</b> {course_line}\n"
-        f"      <i>{esc(note)}</i>\n"
+        + (f"      <i>{esc(note)}</i>\n" if note and not course else "") +
         f"{SEP}\n"
         f"📅 <b>Сегодня:</b> {date_ru(today, with_year=True)}\n"
         f"🔁 <b>Неделя:</b> {WEEK_NAMES[week_type_for(today, semester_start)]}"
@@ -388,7 +392,7 @@ def pair_state(now: datetime, lessons, bells: dict, lunches=()) -> dict:
     no_lessons, no_bells, before, gap, lunch, half1, between, half2, done.
 
     now     — текущее время (уже в часовом поясе техникума)
-    lessons — пары группы на СЕГОДНЯ (уже с учётом числителя/знаменателя)
+    lessons — пары группы на СЕГОДНЯ (уже с учётом зелёной/синей недели)
     bells   — звонки курса из bells_from_rows()
     lunches — обеды курса из lunches_from_rows()
     """
@@ -616,13 +620,38 @@ def lessons_from_ai(raw: dict, group_hint=None, course=None, today=None):
             "week_type": week_type,
         })
 
+    bell_list, bell_problems = bells_from_ai(raw)
+    problems += bell_problems
+    return lessons, bell_list, problems
+
+
+def _mid_time(start: time, end: time) -> time:
+    """Середина между началом и концом (для пар, где указано только начало и конец всей пары)."""
+    total = (end.hour * 60 + end.minute) - (start.hour * 60 + start.minute)
+    m = start.hour * 60 + start.minute + total // 2
+    return time(m // 60, m % 60)
+
+
+def bells_from_ai(raw):
+    """Звонки из ответа ИИ -> (список [пара, s1, e1, s2, e2], проблемы).
+
+    ИИ может прислать 4 времени (две половины пары) или только начало и конец всей пары —
+    тогда пара делится пополам без перерыва."""
+    bells, problems = {}, []
     raw_bells = raw.get("bells") if isinstance(raw, dict) else None
     for item in raw_bells if isinstance(raw_bells, list) else []:
         try:
             pair = str(item.get("pair") or "").strip()
             if not pair.isdigit() or int(pair) < 1:
                 raise ValueError
-            times = [parse_time(str(item.get(k) or "")) for k in ("start1", "end1", "start2", "end2")]
+            if item.get("start1") and item.get("end2"):
+                times = [parse_time(str(item.get(k) or "")) for k in ("start1", "end1", "start2", "end2")]
+            else:
+                start, end = parse_time(str(item.get("start") or "")), parse_time(str(item.get("end") or ""))
+                if not start < end:
+                    raise ValueError
+                mid = _mid_time(start, end)
+                times = [start, mid, mid, end]
             if not (times[0] < times[1] <= times[2] < times[3]):
                 raise ValueError
         except (ValueError, AttributeError):
@@ -630,8 +659,44 @@ def lessons_from_ai(raw: dict, group_hint=None, course=None, today=None):
             problems.append(f"звонок {pair_label} пары: время нечитаемо или идёт не по порядку")
             continue
         bells[int(pair)] = [int(pair), *(t.strftime("%H:%M") for t in times)]
+    return [bells[k] for k in sorted(bells)], problems
 
-    return lessons, [bells[k] for k in sorted(bells)], problems
+
+def lunches_from_ai(raw):
+    """Обеды из ответа ИИ -> (список (начало, конец), проблемы)."""
+    lunches, problems = [], []
+    raw_l = raw.get("lunches") if isinstance(raw, dict) else None
+    for item in raw_l if isinstance(raw_l, list) else []:
+        try:
+            start = parse_time(str(item.get("start") or ""))
+            end = parse_time(str(item.get("end") or ""))
+            if not start < end:
+                raise ValueError
+        except (ValueError, AttributeError):
+            problems.append("обед: время нечитаемо или идёт не по порядку")
+            continue
+        pair = (start.strftime("%H:%M"), end.strftime("%H:%M"))
+        if pair not in lunches:
+            lunches.append(pair)
+    return lunches, problems
+
+
+def ai_bells_preview_text(course, bells, lunches, problems) -> str:
+    """Что ИИ понял про звонки — показываем админу перед сохранением."""
+    lines = [f"🤖 <b>ИИ разобрал звонки — {course} курс</b>", SEP]
+    for number, s1, e1, s2, e2 in bells:
+        lines.append(f"  {number} пара: {s1}–{e1} | {s2}–{e2}")
+    if not bells:
+        lines.append("  звонков не нашёл")
+    if lunches:
+        lines.append("\n🍽 <b>Обеды</b>")
+        lines += [f"  {s}–{e}" for s, e in lunches]
+    if problems:
+        lines.append(f"\n⚠️ <b>Пропущено ({len(problems)}):</b>")
+        lines += [f"• {esc(p)}" for p in problems]
+    lines.append("\nПроверь время и выбери действие 👇")
+    return "\n".join(lines)
+
 
 
 def ai_preview_text(lessons, bells, problems) -> str:

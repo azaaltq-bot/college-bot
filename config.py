@@ -3,10 +3,12 @@
 Секретные ключи НЕ хранятся в коде: бот берёт их из переменных окружения.
 На Railway они задаются во вкладке Variables:
   BOT_TOKEN          — токен от @BotFather
-  ANTHROPIC_API_KEY  — ключ Claude (для распознавания расписания по фото)
+  ADMIN_IDS          — Telegram ID админов через запятую
   DB_PATH            — где хранить базу, например /data/college_bot.db
-  ADMIN_IDS          — Telegram ID админов через запятую (необязательно)
-  CLAUDE_MODEL       — какую модель Claude использовать (необязательно)
+  AI_API_KEY         — ключ бесплатного ИИ (Nemotron 3 Ultra) для разбора расписания и звонков
+  AI_BASE_URL        — адрес сервиса ИИ (если не задан, угадывается по ключу: nvapi-… / sk-or-…)
+  AI_MODEL           — название модели у твоего сервиса (необязательно)
+  AI_VISION_MODEL    — модель, которая видит картинки (необязательно, нужна только для фото)
 """
 
 import os
@@ -36,8 +38,21 @@ LIVE_INTERVAL = float(os.getenv("LIVE_INTERVAL", "1"))
 # Сколько времени таймер обновляется после нажатия, потом останавливается (экономим нагрузку).
 LIVE_MAX_SECONDS = int(os.getenv("LIVE_MAX_SECONDS", str(3 * 60 * 60)))
 
-# ---------- ИИ для распознавания расписания по фото ----------
-# Основной вариант — Claude. Если ANTHROPIC_API_KEY задан, используется он.
+# ---------- Основной ИИ: Nemotron 3 Ultra (любой сервис с OpenAI-совместимым API) ----------
+# Nemotron 3 Ultra читает ТЕКСТ. Админ присылает расписание или звонки текстом (в любом виде),
+# ИИ приводит это к нужному формату.
+AI_API_KEY = os.getenv("AI_API_KEY", "").strip()
+# Если пусто — адрес определяется по ключу: nvapi-… → NVIDIA, sk-or-… → OpenRouter.
+AI_BASE_URL = os.getenv("AI_BASE_URL", "").strip()
+# Точное название модели берётся из каталога сервиса. Если бот пишет «модель не найдена» —
+# скопируй название оттуда и вставь в переменную AI_MODEL.
+AI_MODEL = os.getenv("AI_MODEL", "nvidia/nemotron-3-ultra-550b-a55b").strip()
+# Для распознавания ФОТО нужна модель, которая видит картинки (у того же сервиса).
+# Пусто — фото не принимаются, бот просит прислать текст.
+AI_VISION_MODEL = os.getenv("AI_VISION_MODEL", "").strip()
+
+# ---------- Запасные варианты для ФОТО (необязательно) ----------
+# Claude. Если ANTHROPIC_API_KEY задан, он используется для фото, когда нет AI_VISION_MODEL.
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "").strip()
 ANTHROPIC_BASE_URL = "https://api.anthropic.com"
 # claude-sonnet-5-5 — хороший баланс точности и цены.

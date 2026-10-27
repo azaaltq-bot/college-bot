@@ -1,15 +1,17 @@
 """Распознавание расписания по картинке с помощью ИИ.
 
-Поддерживаются два варианта (выбирается автоматически по тому, какой ключ задан):
-  1. Claude (Anthropic)  — переменная ANTHROPIC_API_KEY  (основной вариант)
-  2. DeepSeek            — переменная DEEPSEEK_API_KEY   (запасной)
+Основной ИИ — Nemotron 3 Ultra (переменная AI_API_KEY, любой сервис с OpenAI-совместимым API).
+Он читает ТЕКСТ: расписание и звонки можно прислать текстом в любом виде.
+Для ФОТО нужна модель с «глазами»: AI_VISION_MODEL (тот же сервис) либо запасные Claude / DeepSeek.
 
-ИИ возвращает пары в формате JSON, а потом ответ проверяется в logic.lessons_from_ai().
+ИИ возвращает данные в формате JSON, а потом ответ проверяется в logic.lessons_from_ai()
+и logic.bells_from_ai().
 """
 
 import asyncio
 import base64
 import json
+import re
 
 import aiohttp
 
@@ -24,12 +26,51 @@ PROMPT = """Ты помогаешь заполнить базу расписан
 - day: одно из пн, вт, ср, чт, пт, сб.
 - pair: номер пары числом.
 - week: "каждая", если пара идёт каждую неделю. Если ячейка разделена на две части или подписана
-  «числитель»/«знаменатель», то верхняя часть — "числитель", нижняя — "знаменатель".
+  «числитель»/«знаменатель» (или выделена зелёным/синим), то верхняя часть (числитель, зелёная) —
+  "зелёная", нижняя (знаменатель, синяя) — "синяя".
 - room и teacher: если на изображении их не видно, пиши пустую строку "".
 - group: название группы так, как оно написано на изображении. Если группа не указана, пиши "{group_hint}".
 - bells: заполняй, только если на изображении есть время звонков со ВСЕМИ четырьмя значениями
   (начало и конец первой половины пары, начало и конец второй). Иначе пустой список [].
 - Ничего не выдумывай. Пустая ячейка значит, что пары нет."""
+
+TEXT_PROMPT = """Ты помогаешь заполнить базу расписания техникума. Ниже текст расписания занятий —
+он мог быть скопирован откуда угодно, формат может быть любым (таблица, список, одной строкой).
+Извлеки ВСЕ пары и верни ТОЛЬКО JSON, без пояснений и без markdown, строго в таком формате:
+{"lessons": [{"group": "ТС 9-26-3", "day": "пн", "pair": 1, "subject": "Математика", "room": "214", "teacher": "Иванова И.И.", "week": "каждая"}],
+ "bells": []}
+
+Правила:
+- day: одно из пн, вт, ср, чт, пт, сб.
+- pair: номер пары числом.
+- week: "каждая", если пара идёт каждую неделю; "зелёная" — только по зелёной неделе (числитель);
+  "синяя" — только по синей неделе (знаменатель).
+- room и teacher: если в тексте их нет, пиши пустую строку "".
+- group: название группы так, как оно написано в тексте. Если группа не указана, пиши "{group_hint}".
+- Ничего не выдумывай. Если не уверен — пропусти запись.
+
+ТЕКСТ РАСПИСАНИЯ:
+"""
+
+BELLS_PROMPT = """Ты помогаешь заполнить расписание звонков техникума. {source}
+Извлеки время пар и верни ТОЛЬКО JSON, без пояснений и без markdown, строго в таком формате:
+{"bells": [{"pair": 1, "start1": "08:30", "end1": "09:15", "start2": "09:20", "end2": "10:05"}],
+ "lunches": [{"start": "11:50", "end": "12:20"}]}
+
+Правила:
+- Время в формате ЧЧ:ММ (24 часа). Точки и двоеточия исправляй: 8.30 → 08:30.
+- Пара в техникуме состоит из двух половин. Если указаны обе (например «08:30–09:15, 09:20–10:05»),
+  заполни start1, end1, start2, end2.
+- Если указано только начало и конец всей пары (например «1 пара 08:30–10:05»), верни вместо четырёх
+  значений два: {"pair": 1, "start": "08:30", "end": "10:05"} — бот сам разделит пару пополам.
+- lunches — только то, что названо обедом или большой переменой на обед. Обычные короткие перемены
+  между парами в lunches не клади.
+- Если обеда нет, lunches — пустой список [].
+- Ничего не выдумывай. Если время нечитаемо — пропусти эту пару.
+"""
+
+BELLS_TEXT_SOURCE = "Ниже текст расписания звонков (формат может быть любым).\n\nТЕКСТ ЗВОНКОВ:\n"
+BELLS_IMAGE_SOURCE = "На изображении расписание звонков."
 
 # Claude принимает только эти форматы картинок
 CLAUDE_IMAGE_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
@@ -42,7 +83,9 @@ class AIError(Exception):
 
 
 def provider_name() -> str:
-    """Какой ИИ сейчас используется: 'claude', 'deepseek' или '' (ключей нет)."""
+    """Какой ИИ разбирает ТЕКСТ: 'custom' (Nemotron), 'claude', 'deepseek' или '' (ключей нет)."""
+    if config.AI_API_KEY:
+        return "custom"
     if config.ANTHROPIC_API_KEY:
         return "claude"
     if config.DEEPSEEK_API_KEY:
@@ -50,8 +93,26 @@ def provider_name() -> str:
     return ""
 
 
+def vision_provider() -> str:
+    """Какой ИИ умеет читать ФОТО ('' — никакой)."""
+    if config.AI_API_KEY and config.AI_VISION_MODEL:
+        return "custom"
+    if config.ANTHROPIC_API_KEY:
+        return "claude"
+    if config.DEEPSEEK_API_KEY:
+        return "deepseek"
+    return ""
+
+
+NO_VISION_MESSAGE = (
+    "📷 Модель Nemotron 3 Ultra читает только текст, картинки она не видит.\n"
+    "Пришли расписание текстом: скопируй его как есть (формат любой), ИИ сам его разберёт."
+)
+
+
 def extract_json(text: str) -> dict:
     """Достаёт JSON из ответа модели, даже если она обернула его в ```json ... ```."""
+    text = re.sub(r"<think>.*?</think>", "", text or "", flags=re.DOTALL)   # «рассуждения» модели
     start, end = text.find("{"), text.rfind("}")
     if start == -1 or end == -1 or end < start:
         raise AIError("ИИ ответил не в том формате. Попробуй отправить картинку ещё раз.")
@@ -188,13 +249,139 @@ async def _recognize_deepseek(image: bytes, mime: str, group_hint=None) -> dict:
     return extract_json(answer)
 
 
+# ---------- Nemotron и другие сервисы с OpenAI-совместимым API ----------
+
+def resolve_base_url() -> str:
+    """Адрес сервиса ИИ: из AI_BASE_URL или по началу ключа."""
+    if config.AI_BASE_URL:
+        return config.AI_BASE_URL.rstrip("/")
+    key = config.AI_API_KEY
+    if key.startswith("nvapi-"):
+        return "https://integrate.api.nvidia.com/v1"
+    if key.startswith("sk-or-"):
+        return "https://openrouter.ai/api/v1"
+    raise AIError("Не знаю адрес сервиса ИИ. Добавь в Railway переменную AI_BASE_URL "
+                  "(адрес API, который указан в документации сервиса, обычно заканчивается на /v1).")
+
+
+def explain_custom_error(status: int, body: str, model: str) -> str:
+    if status == 401:
+        return "Сервис ИИ не принял ключ. Проверь переменную AI_API_KEY в Railway."
+    if status in (402, 403):
+        return "Сервис ИИ отказал в доступе: возможно, закончился бесплатный лимит или ключ не подходит к модели."
+    if status == 404:
+        return (f"Модель «{model}» не найдена у сервиса. Открой каталог моделей своего сервиса, "
+                "скопируй точное название Nemotron 3 Ultra и вставь его в переменную AI_MODEL в Railway.")
+    if status == 429:
+        return "Слишком много запросов к ИИ (бесплатный лимит). Попробуй через минуту."
+    if status >= 500:
+        return "Сервис ИИ сейчас перегружен. Попробуй через пару минут."
+    short = body.strip().replace("\n", " ")[:300]
+    return f"ИИ отклонил запрос (код {status}): {short}"
+
+
+async def _chat_openai(base_url: str, key: str, model: str, content, explain, max_tokens: int = 8000) -> str:
+    """Один запрос в формате OpenAI chat/completions. Возвращает текст ответа."""
+    payload = {"model": model, "temperature": 0, "max_tokens": max_tokens,
+               "messages": [{"role": "user", "content": content}]}
+    status, body = await _post(base_url.rstrip("/") + "/chat/completions", payload,
+                               {"Authorization": f"Bearer {key}"})
+    if status != 200:
+        raise AIError(explain(status, body, model))
+    try:
+        data = json.loads(body)
+        choice = data["choices"][0]
+        answer = choice["message"].get("content")
+    except (json.JSONDecodeError, KeyError, IndexError, TypeError, AttributeError):
+        raise AIError("ИИ прислал непонятный ответ. Попробуй ещё раз.")
+    if choice.get("finish_reason") == "length":
+        raise AIError("Ответ ИИ получился слишком длинным. Пришли данные частями (например, по одной группе).")
+    if isinstance(answer, list):   # некоторые сервисы отдают ответ списком блоков
+        answer = "".join(block.get("text", "") for block in answer if isinstance(block, dict))
+    if not answer or not answer.strip():
+        raise AIError("ИИ вернул пустой ответ. Попробуй ещё раз.")
+    return answer
+
+
+def _text_prompt(kind: str, text: str, group_hint=None) -> str:
+    if kind == "bells":
+        return BELLS_PROMPT.replace("{source}", BELLS_TEXT_SOURCE) + text
+    return TEXT_PROMPT.replace("{group_hint}", group_hint or "") + text
+
+
+def _image_prompt(kind: str, group_hint=None) -> str:
+    if kind == "bells":
+        return BELLS_PROMPT.replace("{source}", BELLS_IMAGE_SOURCE)
+    return PROMPT.replace("{group_hint}", group_hint or "")
+
+
+async def analyze_text(kind: str, text: str, group_hint=None) -> dict:
+    """Разбирает текст расписания (kind='schedule') или звонков (kind='bells') -> JSON от ИИ."""
+    text = (text or "").strip()
+    if not text:
+        raise AIError("Пустой текст. Пришли расписание словами или скопированным текстом.")
+    if len(text) > 30000:
+        raise AIError("Текст слишком длинный. Пришли его частями (например, по одной группе).")
+    prompt = _text_prompt(kind, text, group_hint)
+    provider = provider_name()
+    if provider == "custom":
+        answer = await _chat_openai(resolve_base_url(), config.AI_API_KEY, config.AI_MODEL,
+                                    prompt, explain_custom_error)
+    elif provider == "claude":
+        payload = {"model": config.CLAUDE_MODEL, "max_tokens": 8000, "temperature": 0,
+                   "messages": [{"role": "user", "content": prompt}]}
+        headers = {"x-api-key": config.ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01",
+                   "content-type": "application/json"}
+        status, body = await _post(config.ANTHROPIC_BASE_URL.rstrip("/") + "/v1/messages", payload, headers)
+        if status != 200:
+            raise AIError(explain_claude_error(status, body))
+        try:
+            answer = "".join(b.get("text", "") for b in json.loads(body)["content"] if b.get("type") == "text")
+        except (json.JSONDecodeError, KeyError, TypeError):
+            raise AIError("Claude прислал непонятный ответ. Попробуй ещё раз.")
+    elif provider == "deepseek":
+        answer = await _chat_openai(config.DEEPSEEK_BASE_URL, config.DEEPSEEK_API_KEY, config.DEEPSEEK_MODEL,
+                                    prompt, lambda s, b, m: _explain_deepseek_error(s, b))
+    else:
+        raise AIError("Не задан ключ ИИ. Добавь в Railway переменную AI_API_KEY.")
+    return extract_json(answer)
+
+
+async def recognize_image(kind: str, image: bytes, mime: str, group_hint=None) -> dict:
+    """Читает ФОТО расписания (kind='schedule') или звонков (kind='bells')."""
+    provider = vision_provider()
+    if not provider:
+        raise AIError(NO_VISION_MESSAGE)
+    prompt = _image_prompt(kind, group_hint)
+    if provider == "custom":
+        image_b64 = base64.b64encode(image).decode()
+        content = [{"type": "text", "text": prompt},
+                   {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{image_b64}"}}]
+        answer = await _chat_openai(resolve_base_url(), config.AI_API_KEY, config.AI_VISION_MODEL,
+                                    content, explain_custom_error)
+        return extract_json(answer)
+    if provider == "claude":
+        payload, headers = build_claude_request(image, mime, None)
+        payload["messages"][0]["content"][1]["text"] = prompt
+        status, body = await _post(config.ANTHROPIC_BASE_URL.rstrip("/") + "/v1/messages", payload, headers)
+        if status != 200:
+            raise AIError(explain_claude_error(status, body))
+        try:
+            data = json.loads(body)
+            answer = "".join(b.get("text", "") for b in data["content"] if b.get("type") == "text")
+        except (json.JSONDecodeError, KeyError, TypeError):
+            raise AIError("Claude прислал непонятный ответ. Попробуй ещё раз.")
+        return extract_json(answer)
+    image_b64 = base64.b64encode(image).decode()
+    content = [{"type": "text", "text": prompt},
+               {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{image_b64}", "detail": "high"}}]
+    answer = await _chat_openai(config.DEEPSEEK_BASE_URL, config.DEEPSEEK_API_KEY, config.DEEPSEEK_MODEL,
+                                content, lambda s, b, m: _explain_deepseek_error(s, b))
+    return extract_json(answer)
+
+
 # ---------- Главная функция ----------
 
 async def recognize_schedule(image: bytes, mime: str, group_hint=None) -> dict:
-    """Отправляет картинку в ИИ и возвращает распознанный JSON."""
-    provider = provider_name()
-    if provider == "claude":
-        return await _recognize_claude(image, mime, group_hint)
-    if provider == "deepseek":
-        return await _recognize_deepseek(image, mime, group_hint)
-    raise AIError("Не задан ключ ИИ. Добавь в Railway переменную ANTHROPIC_API_KEY.")
+    """Отправляет фото расписания в ИИ и возвращает распознанный JSON."""
+    return await recognize_image("schedule", image, mime, group_hint)
